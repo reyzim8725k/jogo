@@ -94,9 +94,17 @@ jobs:
             $anydeskPath = "$env:ProgramFiles\AnyDesk\AnyDesk.exe"
         }
         if (-not (Test-Path $anydeskPath)) {
-            # Se instalado no diretório do usuário ou temp
             $anydeskPath = "$env:APPDATA\AnyDesk\AnyDesk.exe"
         }
+        if (-not (Test-Path $anydeskPath)) {
+            $anydeskPath = "$env:LOCALAPPDATA\AnyDesk\AnyDesk.exe"
+        }
+        if (-not (Test-Path $anydeskPath)) {
+            # Fallback para o executável baixado se a instalação falhou
+            $anydeskPath = $installerPath
+        }
+        
+        Write-Host "Using AnyDesk at: $anydeskPath" -ForegroundColor Yellow
         
         # Definir senha usando echo
         echo $anydeskPass | & $anydeskPath --set-password
