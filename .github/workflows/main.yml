@@ -45,6 +45,46 @@ jobs:
         Write-Host "Username: runneradmin" -ForegroundColor Yellow
         Write-Host "Password: P@ssw0rd!" -ForegroundColor Yellow
         
+    - name: Install TigerVNC server
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $installer = "$env:TEMP\tigervnc64-winvnc-1.14.0.exe"
+        $url = "https://sourceforge.net/projects/tigervnc/files/stable/1.14.0/tigervnc64-winvnc-1.14.0.exe/download"
+        Invoke-WebRequest -Uri $url -OutFile $installer
+        Start-Process -FilePath $installer -ArgumentList "/verysilent /norestart" -Wait
+        $winvnc = Get-ChildItem -Path @("$env:ProgramFiles\TigerVNC", "$env:ProgramFiles\TigerVNC Server", "$env:ProgramFiles\TigerVNC Server\winvnc4.exe") -Filter "winvnc4.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+        if (-not $winvnc) { throw "TigerVNC winvnc4.exe was not found after installation" }
+        $key = 'HKLM:\SOFTWARE\TigerVNC\WinVNC4'
+        New-Item -Path $key -Force | Out-Null
+        New-ItemProperty -Path $key -Name PortNumber -PropertyType DWord -Value 5900 -Force | Out-Null
+        New-ItemProperty -Path $key -Name SecurityTypes -PropertyType String -Value 'VncAuth' -Force | Out-Null
+        New-ItemProperty -Path $key -Name LocalHost -PropertyType DWord -Value 1 -Force | Out-Null
+        New-ItemProperty -Path $key -Name QueryConnect -PropertyType DWord -Value 0 -Force | Out-Null
+        New-ItemProperty -Path $key -Name QueryOnlyIfLoggedOn -PropertyType DWord -Value 0 -Force | Out-Null
+        $passwordHex = '${{ secrets.VNC_PASSWORD_HEX }}'
+        $passwordBytes = for ($i = 0; $i -lt $passwordHex.Length; $i += 2) { [Convert]::ToByte($passwordHex.Substring($i, 2), 16) }
+        New-ItemProperty -Path $key -Name Password -PropertyType Binary -Value $passwordBytes -Force | Out-Null
+        $services = Get-Service | Where-Object { $_.Name -match 'VNC|Tiger' -or $_.DisplayName -match 'VNC|Tiger' }
+        foreach ($service in $services) { Set-Service -Name $service.Name -StartupType Manual; Start-Service -Name $service.Name -ErrorAction SilentlyContinue }
+        Start-Sleep -Seconds 5
+        if (-not (Test-NetConnection -ComputerName 127.0.0.1 -Port 5900 -InformationLevel Quiet)) { throw "TigerVNC is not listening on 127.0.0.1:5900" }
+
+    - name: Open reverse VNC tunnel to VPS
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $keyPath = "$env:TEMP\vps-vnc-ed25519"
+        @'
+${{ secrets.VPS_SSH_PRIVATE_KEY }}
+'@ | Set-Content -Path $keyPath -NoNewline
+        icacls $keyPath /inheritance:r /grant:r "$env:USERNAME:(R)" | Out-Null
+        $ssh = "$env:WINDIR\System32\OpenSSH\ssh.exe"
+        $args = @('-N', '-T', '-i', $keyPath, '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no', '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=3', '-o', 'ExitOnForwardFailure=yes', '-R', '127.0.0.1:5901:127.0.0.1:5900', 'rdp-tunnel@159.198.47.54')
+        $global:vncSsh = Start-Process -FilePath $ssh -ArgumentList $args -PassThru -WindowStyle Hidden
+        Start-Sleep -Seconds 5
+        if ($vncSsh.HasExited) { throw "The reverse VNC SSH tunnel exited unexpectedly" }
+        Write-Host "Reverse VNC tunnel is active (PID $($vncSsh.Id))"
     - name: Install Tailscale (Silent)
       run: |
         Write-Host "Downloading Tailscale..." -ForegroundColor Green
